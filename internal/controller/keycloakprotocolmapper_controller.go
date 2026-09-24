@@ -122,28 +122,19 @@ func (r *KeycloakProtocolMapperReconciler) Reconcile(ctx context.Context, req ct
 		return r.updateStatus(ctx, mapper, false, "ConfigSecretError", err.Error(), "", "", "", "")
 	}
 
-	// Find existing mapper by name
+	// Find existing mapper by name. The raw representation is kept for drift
+	// detection so that an unchanged mapper is not re-PUT on every sync.
 	var mapperID string
+	var currentRaw json.RawMessage
+	var existingMappers []json.RawMessage
+	var listErr error
 	if parentType == "client" {
-		existingMappers, err := kc.GetClientProtocolMappers(ctx, realmName, parentID)
-		if err == nil {
-			for _, m := range existingMappers {
-				if m.Name != nil && *m.Name == mapperName {
-					mapperID = *m.ID
-					break
-				}
-			}
-		}
+		existingMappers, listErr = kc.GetClientProtocolMappersRaw(ctx, realmName, parentID)
 	} else {
-		existingMappers, err := kc.GetClientScopeProtocolMappers(ctx, realmName, parentID)
-		if err == nil {
-			for _, m := range existingMappers {
-				if m.Name != nil && *m.Name == mapperName {
-					mapperID = *m.ID
-					break
-				}
-			}
-		}
+		existingMappers, listErr = kc.GetClientScopeProtocolMappersRaw(ctx, realmName, parentID)
+	}
+	if listErr == nil {
+		mapperID, currentRaw = findMapperByName(existingMappers, mapperName)
 	}
 
 	if mapperID == "" {
@@ -160,6 +151,11 @@ func (r *KeycloakProtocolMapperReconciler) Reconcile(ctx context.Context, req ct
 			return r.updateStatus(ctx, mapper, false, "CreateFailed", fmt.Sprintf("Failed to create protocol mapper: %v", err), "", "", parentType, parentID)
 		}
 		log.Info("protocol mapper created successfully", "name", mapperName, "id", mapperID)
+	} else if definitionsMatch(definition, currentRaw) {
+		// Every PUT on a protocol mapper invalidates the owning client in
+		// Keycloak's realm cache on all nodes, so skipping no-op updates keeps
+		// token endpoint latency flat in steady state.
+		log.V(1).Info("protocol mapper already in sync, skipping update", "name", mapperName)
 	} else {
 		// Update mapper
 		definition = mergeIDIntoDefinition(definition, &mapperID)
@@ -344,4 +340,22 @@ func (r *KeycloakProtocolMapperReconciler) findMappersForSecret(ctx context.Cont
 	return findForConfigSecret(ctx, r.Client, obj.(*corev1.Secret), &keycloakv1beta1.KeycloakProtocolMapperList{}, func(o client.Object) *keycloakv1beta1.ConfigSecretRef {
 		return o.(*keycloakv1beta1.KeycloakProtocolMapper).Spec.ConfigSecretRef
 	})
+}
+
+// findMapperByName returns the ID and raw representation of the mapper with
+// the given name, or empty values if none matches.
+func findMapperByName(mappers []json.RawMessage, name string) (string, json.RawMessage) {
+	for _, raw := range mappers {
+		var m struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue
+		}
+		if m.Name == name && m.ID != "" {
+			return m.ID, raw
+		}
+	}
+	return "", nil
 }

@@ -130,12 +130,17 @@ func (r *KeycloakRoleReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		} else {
 			roleID = *existingRole.ID
 			definition = mergeIDIntoDefinition(definition, existingRole.ID)
-			log.Info("updating client role", "name", roleName, "realm", realmName, "client", clientUUID)
-			if err := kc.UpdateClientRole(ctx, realmName, clientUUID, roleName, definition); err != nil {
-				RecordError(controllerName, "keycloak_api_error")
-				return r.updateStatus(ctx, role, false, "UpdateFailed", fmt.Sprintf("Failed to update client role: %v", err), roleID, roleName, true, clientUUID)
+			currentRaw, fetchErr := kc.GetClientRoleRaw(ctx, realmName, clientUUID, roleName)
+			if fetchErr == nil && definitionsMatch(definition, currentRaw) {
+				log.V(1).Info("client role already in sync, skipping update", "name", roleName)
+			} else {
+				log.Info("updating client role", "name", roleName, "realm", realmName, "client", clientUUID)
+				if err := kc.UpdateClientRole(ctx, realmName, clientUUID, roleName, definition); err != nil {
+					RecordError(controllerName, "keycloak_api_error")
+					return r.updateStatus(ctx, role, false, "UpdateFailed", fmt.Sprintf("Failed to update client role: %v", err), roleID, roleName, true, clientUUID)
+				}
+				log.Info("client role updated successfully", "name", roleName)
 			}
-			log.Info("client role updated successfully", "name", roleName)
 		}
 	} else {
 		existingRole, err := kc.GetRealmRole(ctx, realmName, roleName)
@@ -150,12 +155,17 @@ func (r *KeycloakRoleReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		} else {
 			roleID = *existingRole.ID
 			definition = mergeIDIntoDefinition(definition, existingRole.ID)
-			log.Info("updating realm role", "name", roleName, "realm", realmName)
-			if err := kc.UpdateRealmRole(ctx, realmName, roleName, definition); err != nil {
-				RecordError(controllerName, "keycloak_api_error")
-				return r.updateStatus(ctx, role, false, "UpdateFailed", fmt.Sprintf("Failed to update realm role: %v", err), roleID, roleName, false, "")
+			currentRaw, fetchErr := kc.GetRealmRoleRaw(ctx, realmName, roleName)
+			if fetchErr == nil && definitionsMatch(definition, currentRaw) {
+				log.V(1).Info("realm role already in sync, skipping update", "name", roleName)
+			} else {
+				log.Info("updating realm role", "name", roleName, "realm", realmName)
+				if err := kc.UpdateRealmRole(ctx, realmName, roleName, definition); err != nil {
+					RecordError(controllerName, "keycloak_api_error")
+					return r.updateStatus(ctx, role, false, "UpdateFailed", fmt.Sprintf("Failed to update realm role: %v", err), roleID, roleName, false, "")
+				}
+				log.Info("realm role updated successfully", "name", roleName)
 			}
-			log.Info("realm role updated successfully", "name", roleName)
 		}
 	}
 

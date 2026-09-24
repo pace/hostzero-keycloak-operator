@@ -141,12 +141,17 @@ func (r *KeycloakClientScopeReconciler) Reconcile(ctx context.Context, req ctrl.
 		scopeID = *existingScope.ID
 		definition = mergeIDIntoDefinition(definition, existingScope.ID)
 
-		log.Info("updating client scope", "name", scopeDef.Name, "realm", realmName)
-		if err := kc.UpdateClientScope(ctx, realmName, scopeID, definition); err != nil {
-			RecordError(controllerName, "keycloak_api_error")
-			return r.updateStatus(ctx, clientScope, false, "UpdateFailed", fmt.Sprintf("Failed to update client scope: %v", err), scopeID)
+		currentRaw, fetchErr := kc.GetClientScopeRaw(ctx, realmName, scopeID)
+		if fetchErr == nil && definitionsMatch(definition, currentRaw) {
+			log.V(1).Info("client scope already in sync, skipping update", "name", scopeDef.Name)
+		} else {
+			log.Info("updating client scope", "name", scopeDef.Name, "realm", realmName)
+			if err := kc.UpdateClientScope(ctx, realmName, scopeID, definition); err != nil {
+				RecordError(controllerName, "keycloak_api_error")
+				return r.updateStatus(ctx, clientScope, false, "UpdateFailed", fmt.Sprintf("Failed to update client scope: %v", err), scopeID)
+			}
+			log.Info("client scope updated successfully", "name", scopeDef.Name)
 		}
-		log.Info("client scope updated successfully", "name", scopeDef.Name)
 	}
 
 	// Update status
